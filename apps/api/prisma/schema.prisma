@@ -1,0 +1,246 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  QA
+  DEV
+  UNASSIGNED
+}
+
+enum IssueStatus {
+  Open
+  Pending
+  Closed
+}
+
+enum IssueCategory {
+  Critical
+  High
+  Medium
+  Low
+}
+
+enum IssueType {
+  SW
+  C
+  HW
+}
+
+enum IssuePriority {
+  P1
+  P2
+  P3
+  P4
+}
+
+enum InviteStatus {
+  Pending
+  Accepted
+  Expired
+}
+
+enum SmtpEncryption {
+  TLS
+  SSL
+  NONE
+}
+
+// ─── MODELS ───────────────────────────────────────────────────────────────────
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique              // URL-safe org identifier
+  code        String   @unique              // Unique join code e.g. "DEMO", "NDDCC"
+  description String?
+  logoUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  project     Project?
+  invites     Invite[]
+  smtpConfig  SmtpConfig?
+
+  @@map("organizations")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  passwordHash   String
+  firstName      String
+  lastName       String
+  avatarUrl      String?
+  role           UserRole @default(UNASSIGNED)
+  isActive       Boolean  @default(true)
+  isEmailVerified Boolean @default(false)
+  emailVerifyToken String? @unique
+  emailVerifyExpiry DateTime?
+  passwordResetToken String? @unique
+  passwordResetExpiry DateTime?
+  lastLoginAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  reportedIssues Issue[] @relation("ReportedBy")
+  assignedIssues Issue[] @relation("AssignedTo")
+  closedIssues   Issue[] @relation("ClosedBy")
+  refreshTokens  RefreshToken[]
+  activityLogs   ActivityLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
+
+model Project {
+  id             String   @id @default(cuid())
+  name           String
+  description    String?
+  organizationId String   @unique
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  systems        System[]
+  issues         Issue[]
+  ticketCounter  TicketCounter?
+
+  @@map("projects")
+}
+
+model TicketCounter {
+  id        String @id @default(cuid())
+  projectId String @unique
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  count     Int    @default(0)
+
+  @@map("ticket_counters")
+}
+
+model System {
+  id        String   @id @default(cuid())
+  name      String
+  order     Int      @default(0)           // Display order
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  issues    Issue[]
+
+  @@unique([projectId, name])
+  @@map("systems")
+}
+
+model Issue {
+  id          String        @id @default(cuid())
+  ticketNumber String                               // e.g. IF001 — unique within org
+  description  String
+  resolution   String?
+  category     IssueCategory
+  priority     IssuePriority @default(P4)
+  type         IssueType     @default(SW)
+  appModule    String?
+  status       IssueStatus   @default(Open)
+  remarks      String?                              // For Pending status only
+  daysOpen     Int           @default(0)            // Computed, updated on close
+
+  dateRaised       DateTime  @default(now())
+  dateSubmittedToQA DateTime?                       // DEV fills this
+  dateClosed       DateTime?                        // QA fills this
+
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  systemId   String
+  system     System   @relation(fields: [systemId], references: [id])
+
+  reportedById String
+  reportedBy   User   @relation("ReportedBy", fields: [reportedById], references: [id])
+
+  assignedToId String?
+  assignedTo   User?  @relation("AssignedTo", fields: [assignedToId], references: [id])
+
+  closedById String?
+  closedBy   User?  @relation("ClosedBy", fields: [closedById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  activityLogs ActivityLog[]
+
+  @@unique([projectId, ticketNumber])
+  @@map("issues")
+}
+
+model Invite {
+  id             String       @id @default(cuid())
+  email          String
+  role           UserRole
+  token          String       @unique @default(cuid())
+  status         InviteStatus @default(Pending)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedById    String
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@map("invites")
+}
+
+model SmtpConfig {
+  id             String         @id @default(cuid())
+  organizationId String         @unique
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  host           String
+  port           Int            @default(587)
+  encryption     SmtpEncryption @default(TLS)
+  username       String
+  passwordEncrypted String                          // AES-256 encrypted, never plain
+  fromName       String
+  fromEmail      String
+  isVerified     Boolean        @default(false)     // True after test send succeeds
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@map("smtp_configs")
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  action      String                               // e.g. "issue.created", "issue.resolved"
+  description String                               // Human-readable: "Alice logged IF012"
+  metadata    Json?                                // Extra data (old/new values etc.)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  issueId     String?
+  issue       Issue?   @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+
+  @@map("activity_logs")
+}
